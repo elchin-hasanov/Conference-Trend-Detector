@@ -1,3 +1,4 @@
+
 import requests
 # Fetch ICLR 2025 submissions from OpenReview API v2 using openreview-py
 # Usage: python fetch_iclr2025_openreview.py
@@ -6,6 +7,14 @@ import requests
 import openreview
 from datetime import datetime, timezone
 import getpass
+# --- Supabase integration ---
+import os
+from supabase import create_client, Client
+
+# Set these to your actual values or load from environment variables
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://rdqtckpkytaavxffskme.supabase.co')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJkcXRja3BreXRhYXZ4ZmZza21lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3NTc3NjYsImV4cCI6MjA3NTMzMzc2Nn0.ROp8W1PSQt7vo5FNM8G3Eobh3ebXw82HTEmxJONOo1g')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # List of top 5 conferences and their 2025 venue IDs
@@ -50,9 +59,9 @@ def main():
                 abstract = content.get('abstract', {}).get('value')
                 authors_list = content.get('authors', {}).get('value')
                 if isinstance(authors_list, list):
-                    authors = authors_list
+                    authors = ', '.join(authors_list)
                 else:
-                    authors = [authors_list] if authors_list else None
+                    authors = authors_list if authors_list else 'N/A'
                 pub_ms = getattr(note, 'odate', None) or getattr(note, 'tcdate', None)
                 publication_date_iso = ms_to_iso(pub_ms)
                 records.append({
@@ -63,8 +72,8 @@ def main():
                     "authors": authors,
                     "publication_date": publication_date_iso
                 })
-            print(f"First 10 highly rated records (with citation counts from Semantic Scholar):")
-            for rec in records[:10]:
+            print(f"Uploading highly rated records with citation counts from Semantic Scholar:")
+            for rec in records:
                 # Query Semantic Scholar API for citation count using DOI/arXiv if available, else title
                 citation_count = 0
                 doi = None
@@ -100,7 +109,20 @@ def main():
                 except Exception as e:
                     print(f"  [Warning] Citation lookup failed: {e}")
                 rec["citation_count"] = citation_count
-                print(rec)
+                if citation_count > 0:
+                    paper_data = {
+                        "title": rec["title"] or 'N/A',
+                        "author": rec["authors"] or 'N/A',
+                        "abstract": rec["abstract"] or 'N/A',
+                        "publication_date": rec["publication_date"] or '2025-05-01',
+                        "citation_number": citation_count,
+                        "conference_name": "ICLR"
+                    }
+                    try:
+                        supabase.table("papers").insert(paper_data).execute()
+                        print(f"[DB] Inserted: {rec['title']}")
+                    except Exception as e:
+                        print(f"[DB] Error inserting {rec['title']}: {e}")
             print(f"Total highly rated records for {invitation}: {len(records)}")
             total_records += len(records)
     print(f"\nTotal highly rated records for ICLR: {total_records}")

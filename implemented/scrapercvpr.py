@@ -1,10 +1,18 @@
-
 import requests
 from bs4 import BeautifulSoup
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# --- Supabase integration ---
+import os
+from supabase import create_client, Client
+
+# Set these to your actual values or load from environment variables
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://rdqtckpkytaavxffskme.supabase.co')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJkcXRja3BreXRhYXZ4ZmZza21lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk3NTc3NjYsImV4cCI6MjA3NTMzMzc2Nn0.ROp8W1PSQt7vo5FNM8G3Eobh3ebXw82HTEmxJONOo1g')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def fetch_cvpr_2025():
+    print("[INFO] Starting CVPR 2025 scraper...")
     url = "https://openaccess.thecvf.com/CVPR2025?day=all"  # Update if 2025 is not available
     resp = requests.get(url, verify=False)
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -71,22 +79,28 @@ def fetch_cvpr_2025():
             if authors_div_arxiv:
                 author_links_arxiv = authors_div_arxiv.find_all("a")
                 authors = ", ".join([a.get_text(strip=True) for a in author_links_arxiv])
-        pub_date = "2025"
+        pub_date = "2025-06-01"
         if citation_count > 0:
-            results.append({
-                "title": title,
-                "authors": authors,
-                "abstract": abstract,
+            paper_data = {
+                "title": title or 'N/A',
+                "author": authors or 'N/A',
+                "abstract": abstract or 'N/A',
                 "publication_date": pub_date,
-                "arxiv": arxiv_link,
-                "citations": citation_count
-            })
+                "citation_number": citation_count,
+                "conference_name": "CVPR"
+            }
+            results.append(paper_data)
+            # --- Supabase insert ---
+            try:
+                supabase.table("papers").insert(paper_data).execute()
+                print(f"[DB] Inserted: {title}")
+            except Exception as e:
+                print(f"[DB] Error inserting {title}: {e}")
             printed += 1
-            if printed >= 10:
-                break
         time.sleep(0.5)
-    for rec in results:
-        print(rec)
+    print("\nFetched papers with >0 citations:")
+    for p in results:
+        print(p)
 
 if __name__ == "__main__":
     fetch_cvpr_2025()
