@@ -2,6 +2,7 @@ import os
 import re
 import numpy as np
 import pandas as pd
+import json
 
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer  # added TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -11,6 +12,12 @@ from bertopic import BERTopic
 from sentence_transformers import SentenceTransformer
 from umap import UMAP
 from hdbscan import HDBSCAN
+# Optional: Supabase export
+try:
+    from supabase import create_client  # type: ignore
+except Exception:  # pragma: no cover
+    create_client = None  # Will guard at runtime
+
 
 
 # ===================== Config =====================
@@ -469,7 +476,17 @@ n_out = int((series == -1).sum())
 if n_out > 0:
     print(f"WARNING: {n_out} items are still outliers (-1) and won’t be counted.\n")
 
-# Print clusters (+ NEW: non-technical summary)
+# Prepare export payload
+export_payload = {
+    "dataset": DATASET_PATH,
+    "n_documents": n_docs,
+    "n_topics": int(len(counts)),
+    "silhouette_score": (None if best_score <= 0 else float(best_score)),
+    "generated_at": pd.Timestamp.utcnow().isoformat(),
+    "clusters": []
+}
+
+# Print clusters (+ NEW: non-technical summary) and fill export
 df["__topic__"] = topics
 for tid in sorted(counts.index):
     label = new_labels.get(tid, f"topic-{tid}")
@@ -477,8 +494,10 @@ for tid in sorted(counts.index):
     avg_citation = cluster_df["citation_number"].mean()
     if avg_citation is not None and not (isinstance(avg_citation, float) and np.isnan(avg_citation)):
         avg_str = f"{int(avg_citation)}" if float(avg_citation).is_integer() else f"{avg_citation:.2f}"
+        avg_for_json = float(avg_citation)
     else:
         avg_str = "N/A"
+        avg_for_json = None
     # Sort within cluster by citations desc (NaNs last)
     cluster_df_sorted = cluster_df.sort_values(by="citation_number", ascending=False, na_position="last")
     items = list(zip(cluster_df_sorted["title"].tolist(), cluster_df_sorted["citation_number"].tolist()))
@@ -494,9 +513,76 @@ for tid in sorted(counts.index):
         print(f"    Summary (non-technical): (no concise summary available)\n")
     # -------------------------------------------------------------
 
+    # Build JSON for this cluster
+    papers_json = []
+    for title, cites in items:
+        if cites is None or (isinstance(cites, float) and np.isnan(cites)):
+            c = None
+        else:
+            try:
+                c = int(cites) if float(cites).is_integer() else float(cites)
+            except Exception:
+                c = None
+        papers_json.append({"title": title, "citation_number": c})
+
+    export_payload["clusters"].append({
+        "id": int(tid),
+        "label": label,
+        "count": int(len(cluster_df_sorted)),
+        "avg_citation": avg_for_json,
+        "summary": summary_text or None,
+        "papers": papers_json,
+    })
+
 # Final sanity line
 if total != n_docs:
     print(f"\nNOTE: Sum of cluster sizes ({total}) != number of rows ({n_docs}). "
           f"Consider lowering MIN_CLUSTER_SIZE or checking for empty docs.")
 else:
     print(f"\n✔ Sum of cluster sizes matches dataset size: {total} == {n_docs}")
+
+# Write JSON file for Next.js UI
+try:
+    export_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "trendscraper", "public", "clusters.json"))
+    with open(export_path, "w", encoding="utf-8") as f:
+        json.dump(export_payload, f, ensure_ascii=False, indent=2)
+    print(f"Saved clusters JSON to: {export_path}")
+except Exception as e:
+    print(f"WARNING: Failed to write clusters JSON: {e}")
+
+# Upsert into Supabase (paper_clusters) if configured
+def _export_to_supabase(payload: dict) -> None:
+    if create_client is None:
+        print("Supabase client not available; skipping DB export.")
+        return
+    url = os.environ.get("SUPABASE_URL")
+    key = (
+        os.environ.get("SUPABASE_SERVICE_KEY")
+        or os.environ.get("SUPABASE_ANON_KEY")
+        or os.environ.get("SUPABASE_KEY")
+    )
+    if not url or not key:
+        print("Supabase URL/KEY not set; skipping DB export.")
+        return
+    try:
+        sb = create_client(url, key)
+        rows = []
+        for cl in payload.get("clusters", []):
+            rows.append({
+                "cluster_id": cl.get("id"),
+                "keywords": cl.get("label"),
+                "avg_citation": cl.get("avg_citation"),
+                "num_papers": cl.get("count"),
+                "papers": cl.get("papers"),
+            })
+        if not rows:
+            print("No cluster rows to export to Supabase.")
+            return
+        # Upsert; assumes a unique constraint/PK on cluster_id
+        resp = sb.table("paper_clusters").upsert(rows).execute()
+        status = getattr(resp, "status_code", None)
+        print(f"Supabase export done (status: {status}).")
+    except Exception as e:
+        print(f"WARNING: Supabase export failed: {e}")
+
+_export_to_supabase(export_payload)
