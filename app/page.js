@@ -14,6 +14,9 @@ export default function Home() {
           <Link href="/papers">
             <span className="inline-block rounded-lg bg-blue-600 text-white px-6 py-3 font-semibold shadow hover:bg-blue-700 transition-colors cursor-pointer">View Papers</span>
           </Link>
+          <Link href="/clusters">
+            <span className="inline-block rounded-lg bg-emerald-600 text-white px-6 py-3 font-semibold shadow hover:bg-emerald-700 transition-colors cursor-pointer">View Clusters</span>
+          </Link>
         </div>
       </main>
     </div>
